@@ -61,21 +61,36 @@ async def set_webhook_with_retry():
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return
+    
     user_id = str(update.effective_user.id)
+    logging.info(f"收到来自 {user_id} 的消息: {update.message.text}")
+
+    # 1. 权限检查日志
     if ADMIN_ID and user_id != str(ADMIN_ID):
+        logging.warning(f"拒绝未授权访问: {user_id}")
         return
 
     placeholder = await update.message.reply_text("🤔 Hermes 正在思考...")
+    
     try:
+        # 2. 调用 OpenRouter
+        logging.info("正在请求 OpenRouter...")
         response = await client.chat.completions.create(
             model="google/gemini-2.0-flash-001",
-            messages=[{"role": "user", "content": update.message.text}]
+            messages=[
+                {"role": "system", "content": "你是一个专业的麻醉学专家助理 Hermes。"},
+                {"role": "user", "content": update.message.text}
+            ],
+            timeout=30.0 # 增加超时保护
         )
         answer = response.choices[0].message.content
+        logging.info("OpenRouter 响应成功")
+        await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=placeholder.message_id, text=answer)
+        
     except Exception as e:
-        answer = f"❌ 调取大脑失败: {e}"
-
-    await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=placeholder.message_id, text=answer)
+        error_msg = f"❌ 调取大脑失败: {type(e).__name__} - {str(e)}"
+        logging.error(error_msg)
+        await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=placeholder.message_id, text=error_msg)
 
 # --- 5. 路由配置 ---
 @app.get("/")
