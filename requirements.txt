@@ -1,4 +1,4 @@
-openai
+fastapi
+uvicorn
 python-dotenv
-requests
-# 以及其他 Hermes Agent 运行所需的库
+pydantic
