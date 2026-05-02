@@ -1,22 +1,22 @@
-# 使用基础镜像
 FROM python:3.10-slim
 
-# 安装必要工具
-RUN apt-get update && apt-get install -y curl bash git && rm -rf /var/lib/apt/lists/*
+# 安装构建工具，这是解决 pip install 报错的关键
+RUN apt-get update && apt-get install -y \
+    curl bash git gcc g++ make python3-dev libffi-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# 关键：克隆仓库到当前目录
-# 注意后面的“.”号，代表直接克隆到 /app
-RUN git clone https://github.com/NousResearch/hermes-agent.git .
+# 注意：如果你的仓库里已经有代码，不要再执行 git clone，
+# 否则会造成代码路径混乱（变成 /app/hermes-agent/main.py）
+# Sliplane 会自动同步你的仓库内容到 WORKDIR
+COPY . .
 
-# 检查并安装依赖
+# 升级 pip 并安装依赖
+RUN pip install --upgrade pip
 RUN if [ -f "requirements.txt" ]; then \
         pip install --no-cache-dir -r requirements.txt; \
-    else \
-        pip install --no-cache-dir .; \
     fi
 
-# 修正启动文件路径
-# 如果通过 SSH 发现文件在子目录，请改为 "python", "src/main.py"
+# 启动命令
 CMD ["python", "main.py"]
