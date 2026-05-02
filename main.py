@@ -59,38 +59,53 @@ async def set_webhook_with_retry():
 
 # --- 4. 业务逻辑 ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # 诊断点 1: 确认函数是否被触发
+    logging.info("--- 收到 Webhook 触发 ---")
+    
     if not update.message or not update.message.text:
+        logging.warning("收到空消息或非文本消息，跳过。")
         return
     
     user_id = str(update.effective_user.id)
-    logging.info(f"收到来自 {user_id} 的消息: {update.message.text}")
+    user_text = update.message.text
+    logging.info(f"用户 ID: {user_id} | 消息内容: {user_text}")
 
-    # 1. 权限检查日志
-    if ADMIN_ID and user_id != str(ADMIN_ID):
-        logging.warning(f"拒绝未授权访问: {user_id}")
+    # 诊断点 2: 检查权限过滤
+    # 注意：如果 ADMIN_ID 在环境变量里是 "123" 但 user_id 是 123 (int)，对比会失败
+    if ADMIN_ID and str(user_id) != str(ADMIN_ID):
+        logging.warning(f"🚫 拦截未授权访问。当前 ADMIN_ID 配置为: {ADMIN_ID}")
         return
 
+    logging.info("权限检查通过，开始请求 OpenRouter...")
     placeholder = await update.message.reply_text("🤔 Hermes 正在思考...")
     
     try:
-        # 2. 调用 OpenRouter
-        logging.info("正在请求 OpenRouter...")
+        # 诊断点 3: 检查 OpenRouter 调用
         response = await client.chat.completions.create(
             model="google/gemini-2.0-flash-001",
             messages=[
                 {"role": "system", "content": "你是一个专业的麻醉学专家助理 Hermes。"},
-                {"role": "user", "content": update.message.text}
+                {"role": "user", "content": user_text}
             ],
-            timeout=30.0 # 增加超时保护
+            timeout=45.0  # 增加超时容忍度
         )
         answer = response.choices[0].message.content
-        logging.info("OpenRouter 响应成功")
-        await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=placeholder.message_id, text=answer)
+        logging.info("✅ OpenRouter 响应成功")
         
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id, 
+            message_id=placeholder.message_id, 
+            text=answer
+        )
     except Exception as e:
-        error_msg = f"❌ 调取大脑失败: {type(e).__name__} - {str(e)}"
-        logging.error(error_msg)
-        await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=placeholder.message_id, text=error_msg)
+        # 诊断点 4: 捕获详细错误
+        error_type = type(e).__name__
+        logging.error(f"❌ 运行报错: {error_type} - {str(e)}")
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id, 
+            message_id=placeholder.message_id, 
+            text=f" Hermes 脑部异常 ({error_type}): {str(e)}"
+        )
 
 # --- 5. 路由配置 ---
 @app.get("/")
