@@ -1,0 +1,14 @@
+# Hermes Agent 基础配置
+model: "hf/Qwen/Qwen2.5-32B-Instruct"     # 可改成其他 HF 模型
+
+terminal:
+  backend: docker           # 在云平台必须用 docker
+
+# 可选配置（推荐保留）
+gateway:
+  port: 8080
+  host: "0.0.0.0"
+
+# 记忆和技能持久化
+memory:
+  enabled: true
