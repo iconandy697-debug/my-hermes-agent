@@ -124,7 +124,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         search_data = await get_search_context(user_text)
 
     try:
-        system_content = "你是一个专业的麻醉学专家助理 Hermes。"
+        system_content = "你是一个专业的麻醉学专家助理 Hermes。请确保你的 Markdown 格式严谨，所有加粗和斜体符号必须成对出现。"
         if search_data:
             system_content += f"\n\n以下是为你检索到的实时参考信息，请结合这些信息给出专业回答：\n{search_data}"
 
