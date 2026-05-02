@@ -8,9 +8,8 @@ from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 from dotenv import load_dotenv
 
-# --- 1. 基础配置与环境加载 ---
+# --- 1. 基础配置 ---
 load_dotenv()
-# 提高日志详细度，确保能看到每一个请求
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', 
     level=logging.INFO
@@ -29,12 +28,10 @@ if not os.path.exists(DATA_DIR):
     os.makedirs(DATA_DIR, exist_ok=True)
 
 app = FastAPI()
-# 初始化 OpenAI 客户端（用于 OpenRouter）
 client = openai.AsyncOpenAI(api_key=OPENROUTER_API_KEY, base_url="https://openrouter.ai/api/v1")
-# 构建 Telegram Application
 tg_app = Application.builder().token(TOKEN).build()
 
-# --- 2. 数据库逻辑 ---
+# --- 2. 数据库初始化 ---
 def init_db():
     try:
         conn = sqlite3.connect(DB_PATH)
@@ -46,118 +43,106 @@ def init_db():
     except Exception as e:
         logging.error(f"❌ 数据库初始化失败: {e}")
 
-# --- 3. 核心业务逻辑 (含深度日志) ---
+# --- 3. 消息处理逻辑 ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info("📢 [逻辑层] 已进入 handle_message")
+    logging.info("📢 [逻辑层] 接收到消息请求")
     
     if not update.message or not update.message.text:
-        logging.warning("⚠️ 收到非文本消息或空 Update，忽略")
         return
 
     user_id = str(update.effective_user.id)
     user_text = update.message.text
-    logging.info(f"👤 用户 ID: {user_id} | 📝 消息内容: {user_text}")
 
     # 权限校验
     if ADMIN_ID and str(user_id) != str(ADMIN_ID):
-        logging.warning(f"🚫 拦截未授权访问: {user_id} (配置的 ADMIN_ID 为 {ADMIN_ID})")
+        logging.warning(f"🚫 拦截未授权访问: {user_id}")
         return
 
-    # 发送等待提示
     placeholder = await update.message.reply_text("🤔 Hermes 正在思考...")
 
     try:
-        logging.info(f"🧠 正在调用模型: google/gemini-2.0-flash-001")
         response = await client.chat.completions.create(
             model="google/gemini-2.0-flash-001",
             messages=[
                 {"role": "system", "content": "你是一个专业的麻醉学专家助理 Hermes。"},
                 {"role": "user", "content": user_text}
             ],
-            timeout=45.0
+            timeout=40.0
         )
         answer = response.choices[0].message.content
-        logging.info("✅ OpenRouter 响应成功")
-
-        # 更新 Telegram 消息
         await context.bot.edit_message_text(
             chat_id=update.effective_chat.id, 
             message_id=placeholder.message_id, 
             text=answer
         )
+        logging.info("✅ 回复发送成功")
     except Exception as e:
-        err_msg = f"❌ 逻辑异常: {type(e).__name__} - {str(e)}"
-        logging.error(err_msg)
+        logging.error(f"❌ 模型调用异常: {e}")
         await context.bot.edit_message_text(
             chat_id=update.effective_chat.id, 
             message_id=placeholder.message_id, 
-            text=f"Hermes 暂时无法回复: {str(e)}"
+            text=f" Hermes 暂时无法连接大脑: {str(e)}"
         )
 
-# --- 4. Webhook 异步设置逻辑 ---
-async def set_webhook_with_retry():
-    if not DOMAIN:
-        logging.error("❌ 未发现 SLIPLANE_DOMAIN 环境变量")
-        return
-
+# --- 4. 关键：后台异步启动序列 ---
+async def start_telegram_backend():
+    """在后台不断重试直到 Telegram 连接成功"""
+    retry_delay = 2
     webhook_url = f"https://{DOMAIN}/webhook"
-    retry_delay = 5
     
     while True:
         try:
-            # 明确指定 Webhook 地址并清理旧更新
+            logging.info("🔄 尝试初始化 Telegram 联网服务...")
+            # initialize 会尝试调用 getMe，如果网络未就绪会报错
+            await tg_app.initialize() 
+            await tg_app.start()
+            
+            # 挂载 Webhook
             await tg_app.bot.set_webhook(url=webhook_url, drop_pending_updates=True)
-            logging.info(f"✅ [后台] Webhook 成功挂载: {webhook_url}")
-            return
+            logging.info(f"✅ [核心] Webhook 成功挂载: {webhook_url}")
+            break 
         except Exception as e:
-            logging.error(f"⚠️ [后台] Webhook 挂载失败: {e}。{retry_delay}秒后重试...")
+            logging.error(f"⚠️ 联网初始化失败: {e}，{retry_delay}秒后重试...")
             await asyncio.sleep(retry_delay)
-            retry_delay = min(retry_delay * 2, 60)
+            retry_delay = min(retry_delay * 2, 30) # 指数退避策略
 
 # --- 5. FastAPI 路由 ---
 @app.get("/")
-async def health_check():
-    return {"status": "running", "admin_configured": bool(ADMIN_ID)}
+async def health():
+    return {"status": "online", "bot_running": tg_app.running}
 
 @app.post("/webhook")
 async def telegram_webhook(request: Request):
-    logging.info("📥 [网络层] 接收到 POST 请求")
-    
     if not tg_app.running:
-        logging.error("❌ tg_app 尚未完全初始化")
-        return Response(content="Initializing...", status_code=200)
+        logging.warning("📥 收到 Webhook 但 Bot 尚未就绪")
+        return Response(content="Wait for init", status_code=200)
     
     try:
-        payload = await request.json()
-        logging.info(f"数据包: {payload}")
-        update = Update.de_json(payload, tg_app.bot)
-        # 将 update 放入队列处理
+        data = await request.json()
+        logging.info(f"📥 收到信号: {data}")
+        update = Update.de_json(data, tg_app.bot)
         await tg_app.process_update(update)
     except Exception as e:
-        logging.error(f"💥 Webhook 处理崩溃: {e}")
+        logging.error(f"💥 Webhook 路由异常: {e}")
     
     return Response(content="OK", status_code=200)
 
-# --- 6. 启动序列 ---
+# --- 6. 启动与停机 ---
 @app.on_event("startup")
 async def on_startup():
     init_db()
-    
-    # 注册消息处理器：允许所有文本消息
+    # 注册处理器
     tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    # 关键：先启动内部状态，再设置 Webhook
-    await tg_app.initialize()
-    await tg_app.start()
-    
-    # 启动后台任务设置 Webhook
-    asyncio.create_task(set_webhook_with_retry())
-    logging.info("🚀 Hermes 启动序列完成")
+    # 核心修改：将联网操作转入后台任务，不阻塞 FastAPI 启动
+    asyncio.create_task(start_telegram_backend())
+    logging.info("🚀 FastAPI 启动成功，Telegram 任务已转入后台重试流")
 
 @app.on_event("shutdown")
 async def on_shutdown():
-    await tg_app.stop()
-    await tg_app.shutdown()
+    if tg_app.running:
+        await tg_app.stop()
+        await tg_app.shutdown()
 
 if __name__ == "__main__":
     import uvicorn
