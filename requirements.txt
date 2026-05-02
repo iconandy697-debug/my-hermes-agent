@@ -1,6 +1,7 @@
+python-telegram-bot
+openai
 fastapi
 uvicorn
-python-telegram-bot
 python-dotenv
-openai
+tavily-python
 apscheduler
