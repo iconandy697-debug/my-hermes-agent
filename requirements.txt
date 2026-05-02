@@ -5,3 +5,5 @@ uvicorn
 python-dotenv
 tavily-python
 apscheduler
+langchain-core
+langchain-openai
