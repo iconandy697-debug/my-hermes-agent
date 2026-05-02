@@ -163,19 +163,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         answer = response.choices[0].message.content
         
         # 编辑占位消息显示最终结果
+        try:
+        # 第一尝试：使用 Markdown 渲染
         await context.bot.edit_message_text(
             chat_id=update.effective_chat.id, 
             message_id=placeholder.message_id, 
             text=answer,
             parse_mode="Markdown"
         )
-        logging.info("✅ 回复发送成功")
     except Exception as e:
-        logging.error(f"❌ 流程异常: {e}")
-        await context.bot.edit_message_text(
-            chat_id=update.effective_chat.id, 
-            message_id=placeholder.message_id, 
-            text=f"❌ Hermes 遇到了一些问题: {str(e)}"
+        if "Can't parse entities" in str(e):
+            # 第二尝试：Markdown 解析失败，降级为纯文本，防止答案丢失
+            logging.warning(f"⚠️ 格式解析失败 (offset {e.byte_offset})，已转为纯文本发送")
+            await context.bot.edit_message_text(
+                chat_id=update.effective_chat.id, 
+                message_id=placeholder.message_id, 
+                text=answer  # 删掉 parse_mode 参数
+            )
+        else:
+            logging.error(f"❌ 发送消息时发生其他错误: {e}")
         )
 
 # --- 6. 后台启动序列 ---
