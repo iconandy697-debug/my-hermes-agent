@@ -2,3 +2,5 @@ fastapi
 uvicorn
 python-telegram-bot
 python-dotenv
+openai
+# 不需要额外安装 sqlite3，它是 Python 内置的
