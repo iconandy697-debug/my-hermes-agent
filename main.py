@@ -3,7 +3,7 @@ import logging
 import asyncio
 import sqlite3
 import openai
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 from dotenv import load_dotenv
@@ -25,6 +25,7 @@ if not os.path.exists(DATA_DIR):
     os.makedirs(DATA_DIR, exist_ok=True)
 
 app = FastAPI()
+# 预先构建 Application 对象
 tg_app = Application.builder().token(TOKEN).build()
 client = openai.AsyncOpenAI(api_key=OPENROUTER_API_KEY, base_url="https://openrouter.ai/api/v1")
 
@@ -35,34 +36,36 @@ def init_db():
     conn.commit()
     conn.close()
 
-# --- 3. 后台激活任务 (关键修复) ---
-async def setup_webhook_task():
-    """在后台静默重试，不阻塞 FastAPI 启动"""
-    await asyncio.sleep(5)  # 给容器 5 秒钟来打通网络
-    await tg_app.initialize()
+# --- 3. 后台 Webhook 激活逻辑 ---
+async def set_webhook_with_retry():
+    """专门负责在后台反复尝试设置 Webhook，直到成功"""
+    if not DOMAIN:
+        logging.error("未设置 SLIPLANE_DOMAIN")
+        return
+
+    webhook_url = f"https://{DOMAIN}/webhook"
+    retry_delay = 5
     
-    if DOMAIN:
-        webhook_url = f"https://{DOMAIN}/webhook"
-        for i in range(10):  # 增加到 10 次重试
-            try:
-                # 增加超长时间限制
-                await tg_app.bot.set_webhook(url=webhook_url, connect_timeout=40, read_timeout=40)
-                logging.info(f"✅ [后台] Webhook 激活成功: {webhook_url}")
-                return
-            except Exception as e:
-                logging.error(f"⚠️ [后台] 第 {i+1} 次激活失败 (网络未就绪): {e}")
-                await asyncio.sleep(10)
-    logging.error("❌ 后台 Webhook 设置最终失败，请检查 TOKEN 或网络。")
+    while True:
+        try:
+            # 仅设置 Webhook，不涉及初始化
+            await tg_app.bot.set_webhook(url=webhook_url, drop_pending_updates=True, connect_timeout=30)
+            logging.info(f"✅ [后台] Webhook 成功挂载到: {webhook_url}")
+            return
+        except Exception as e:
+            logging.error(f"⚠️ [后台] Webhook 挂载失败: {e}。{retry_delay}秒后重试...")
+            await asyncio.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, 60)
 
 # --- 4. 业务逻辑 ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        return
     user_id = str(update.effective_user.id)
     if ADMIN_ID and user_id != str(ADMIN_ID):
         return
 
     placeholder = await update.message.reply_text("🤔 Hermes 正在思考...")
-    
-    # 简单的对话逻辑 (为了稳定暂时简化，您可以自行加回历史记录逻辑)
     try:
         response = await client.chat.completions.create(
             model="google/gemini-2.0-flash-001",
@@ -70,29 +73,44 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         answer = response.choices[0].message.content
     except Exception as e:
-        answer = f"❌ 错误: {e}"
+        answer = f"❌ 调取大脑失败: {e}"
 
     await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=placeholder.message_id, text=answer)
 
-# --- 5. 路由与启动控制 ---
+# --- 5. 路由配置 ---
 @app.get("/")
 async def health_check():
     return {"status": "online"}
 
 @app.post("/webhook")
 async def telegram_webhook(request: Request):
-    data = await request.json()
-    update = Update.de_json(data, tg_app.bot)
-    await tg_app.process_update(update)
-    return {"ok": True}
+    # 关键防护：如果应用还没初始化完成，直接返回 200 丢弃这次请求，防止 500 报错
+    if not tg_app.running:
+        return Response(content="Not initialized", status_code=200)
+    
+    try:
+        data = await request.json()
+        update = Update.de_json(data, tg_app.bot)
+        await tg_app.process_update(update)
+    except Exception as e:
+        logging.error(f"Webhook 异常: {e}")
+    return Response(content="OK", status_code=200)
 
 @app.on_event("startup")
 async def on_startup():
     init_db()
     tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    # 🔥 核心改动：使用 create_task 让它在后台跑，不干扰 startup 完成
-    asyncio.create_task(setup_webhook_task())
-    logging.info("🚀 FastAPI 已就绪，后台 Webhook 任务已启动。")
+    
+    # 🔥 1. 立即初始化应用（本地初始化，不联网）
+    # 这步解决了 "Application was not initialized" 的报错
+    try:
+        await tg_app.initialize()
+        logging.info("🚀 Telegram Application 内部初始化完成")
+    except Exception as e:
+        logging.error(f"初始化失败: {e}")
+
+    # 🔥 2. 将联网设置 Webhook 的任务丢到后台
+    asyncio.create_task(set_webhook_with_retry())
 
 if __name__ == "__main__":
     import uvicorn
