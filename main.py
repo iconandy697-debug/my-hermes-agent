@@ -41,14 +41,30 @@ scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
 # --- 2. 辅助功能：网页检索 ---
 async def get_search_context(query: str):
     """调用 Tavily 获取实时网络背景"""
-    if not tavily:
-        logging.warning("⚠️ Tavily API Key 未配置，跳过搜索")
+    # 检查 Key 是否存在（防止因变量名错误导致为 None）
+    if not TAVILY_API_KEY:
+        logging.error("❌ TAVILY_API_KEY 为空，请检查环境变量配置")
         return ""
+    
     try:
-        # 使用高级检索模式，返回内容更适合学术总结
-        response = tavily.search(query=query, search_depth="advanced", max_results=5)
-        context_list = [f"来源: {r['url']}\n内容: {r['content']}" for r in response.get('results', [])]
+        # 使用 run_in_executor 运行同步的 Tavily SDK 防止阻塞异步主线程
+        loop = asyncio.get_event_loop()
+        # search_depth="advanced" 消耗 2 Credits，提供更深度的学术内容
+        # search_depth="basic" 消耗 1 Credit
+        response = await loop.run_in_executor(
+            None, 
+            lambda: tavily.search(query=query, search_depth="advanced", max_results=5)
+        )
+        
+        results = response.get('results', [])
+        if not results:
+            logging.warning(f"⚠️ 搜索完成但未找到相关结果: {query}")
+            return ""
+            
+        context_list = [f"来源: {r['url']}\n内容: {r['content']}" for r in results]
+        logging.info(f"✅ Tavily 搜索成功，获取到 {len(results)} 条信息")
         return "\n\n".join(context_list)
+        
     except Exception as e:
         logging.error(f"🌐 Tavily 搜索异常: {e}")
         return ""
