@@ -124,9 +124,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         search_data = await get_search_context(user_text)
 
     try:
-        system_content = "你是一个专业的麻醉学专家助理 Hermes。请确保你的 Markdown 格式严谨，所有加粗和斜体符号必须成对出现。"
+        # 修改这里的 System Content，赋予它“联网意识”
+        system_content = (
+            "你是一个专业的麻醉学专家助理 Hermes。你现在拥有通过 Tavily 访问实时互联网的能力。"
+            "我会为你提供最新的搜索数据，请你结合这些信息给出最前沿、最准确的专业回答。"
+            "严禁在回答中说‘我无法访问互联网’或‘我的信息不是最新的’。"
+            "如果引用了检索到的数据，请直接呈现结果。"
+        )
+        
         if search_data:
-            system_content += f"\n\n以下是为你检索到的实时参考信息，请结合这些信息给出专业回答：\n{search_data}"
+            system_content += f"\n\n【最新实时检索数据】:\n{search_data}"
 
         response = await client.chat.completions.create(
             model="google/gemini-2.0-flash-001",
@@ -136,6 +143,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ],
             timeout=60.0
         )
+        # ... 后续逻辑 ...
         answer = response.choices[0].message.content
         
         # 编辑占位消息显示最终结果
